@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Generador de cierres</title>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <style>
+    :root{font-family:Segoe UI,Arial,sans-serif;color:#17231f;background:#f5f7f6}
+    *{box-sizing:border-box}
+    body{margin:0;padding:28px}
+    .card{max-width:860px;margin:auto;background:white;border:1px solid #d9e1dd;border-radius:14px;padding:24px;box-shadow:0 8px 30px #0000000d}
+    h1{font-size:24px;margin:0 0 6px}
+    .sub{color:#5d6b65;margin:0 0 22px}
+    label{display:block;font-weight:600;margin:16px 0 7px}
+    input,select,button{font:inherit}
+    input[type=file],input[type=text],select{width:100%;padding:11px 12px;border:1px solid #bfcac5;border-radius:8px;background:#fff}
+    button{margin-top:20px;width:100%;padding:13px 16px;border:0;border-radius:9px;background:#0b5d48;color:#fff;font-weight:700;cursor:pointer}
+    button:disabled{opacity:.45;cursor:not-allowed}
+    .status{margin-top:18px;min-height:120px;padding:12px;background:#f1f5f3;border-radius:8px;white-space:pre-wrap;font-family:Consolas,monospace;font-size:13px}
+    .small{font-size:12px;color:#68756f;margin-top:10px}
+    .ok{color:#0b5d48;font-weight:600}
+    .err{color:#a32626;font-weight:600}
+  </style>
+</head>
+<body>
+<div class="card">
+  <h1>Generador de cierres individuales</h1>
+  <p class="sub">Procesa el cierre en tu navegador y descarga un único ZIP por JE.</p>
+
+  <div id="authBanner" style="margin:14px 0 18px;padding:12px;border-radius:8px;background:#fff3cd;border:1px solid #ffe69c;color:#664d03">
+    Validando autorización online...
+  </div>
+
+
+  <label for="file">Excel de cierre (.xlsm / .xlsx)</label>
+  <input id="file" type="file" accept=".xlsm,.xlsx">
+
+  <label for="je">Matrícula JE</label>
+  <input id="je" type="text" list="jeList" placeholder="Ej. 254261">
+  <datalist id="jeList"></datalist>
+
+  <button id="generate" disabled>GENERAR CIERRES</button>
+  <div id="status" class="status">Selecciona el Excel de cierre.</div>
+  <div class="small">Necesita conexión a internet para cargar las librerías. El Excel se procesa en el navegador; no se sube a un servidor.</div>
+</div>
+
+
+<script>
+const REMOTE_CONTROL = {
+  url: "./control.js",
+  appId: "cierres-angel-v1",
+  token: "ANGEL-CIERRES-2026-CTRL-9F4A7D",
+  timeoutMs: 8000
+};
+
+let remoteAuthorization = { ok:false, checkedAt:0, message:"Sin validar" };
+
+function loadRemoteControlScript(){
+  return new Promise((resolve, reject)=>{
+    try{ delete window.CIERRES_CONTROL; }catch(e){}
+    const old = document.getElementById("cierres-control-script");
+    if(old) old.remove();
+
+    const script = document.createElement("script");
+    script.id = "cierres-control-script";
+    script.src = REMOTE_CONTROL.url + "?_=" + Date.now();
+    script.async = true;
+
+    const timer = setTimeout(()=>{
+      script.remove();
+      reject(new Error("No se puede validar la autorización online."));
+    }, REMOTE_CONTROL.timeoutMs);
+
+    script.onload = ()=>{
+      clearTimeout(timer);
+      resolve(window.CIERRES_CONTROL);
+    };
+    script.onerror = ()=>{
+      clearTimeout(timer);
+      reject(new Error("No se puede cargar el control remoto."));
+    };
+    document.head.appendChild(script);
+  });
+}
+
+async function validateRemoteAuthorization(showMessage=true){
+  const btn = document.getElementById("generate");
+  const fileInput = document.getElementById("file");
+  const jeInput = document.getElementById("je");
+  try{
+    const data = await loadRemoteControlScript();
+    if(!data || typeof data !== "object") throw new Error("Control remoto no válido.");
+    if(data.appId !== REMOTE_CONTROL.appId) throw new Error("Control remoto no válido.");
+    if(data.token !== REMOTE_CONTROL.token) throw new Error("Token de autorización no válido.");
+    if(data.active !== true) throw new Error(data.message || "Aplicación desactivada por el propietario.");
+    if(data.expires){
+      const exp = new Date(data.expires);
+      if(Number.isNaN(exp.getTime())) throw new Error("Fecha de caducidad remota no válida.");
+      if(Date.now() > exp.getTime()) throw new Error(data.message || "Autorización caducada.");
+    }
+    remoteAuthorization = {ok:true, checkedAt:Date.now(), message:data.message || "Autorizado"};
+    if(fileInput) fileInput.disabled = false;
+    if(jeInput) jeInput.disabled = false;
+    if(btn) btn.disabled = !window.sourceWorkbook;
+    if(showMessage && typeof resetStatus === "function"){
+      resetStatus("Autorización online: ACTIVA\\nSelecciona el Excel de cierre.");
+    }
+    return true;
+  }catch(err){
+    remoteAuthorization = {ok:false, checkedAt:Date.now(), message:String(err?.message || err)};
+    if(fileInput) fileInput.disabled = true;
+    if(jeInput) jeInput.disabled = true;
+    if(btn) btn.disabled = true;
+    if(showMessage && typeof resetStatus === "function"){
+      resetStatus("APLICACIÓN BLOQUEADA\\n" + remoteAuthorization.message);
+    }
+    return false;
+  }
+}
+</script>
+
+<script>
+"use strict";
+
+const CFG = {
+  hojaResumen: "INSTALADORES 2",
+  detalles: [
+    {salida:"APP", origen:"APP"},
+    {salida:"Calidad instalación", origen:"Calidad instalación"},
+    {salida:"Instaladas NPS", origen:"Instaladas nps"},
+    {salida:"Incumplimientos", origen:"INCUMPLIMIENTOS"},
+    {salida:"Incidencias envio", origen:"INCIDENCIAS envio"},
+    {salida:"Incidencias normal", origen:"INCIDENCIAS normal"}
+  ],
+  objetivos: {incumplimientosMax:0.10,npsMin:0.90,appMin:0.90,calidadMax:0.025}
+};
+
+const MONTHS = ["","enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+window.sourceWorkbook = null;
+let sourceWorkbook = window.sourceWorkbook;
+let sourceFileName = "";
+let jeNames = new Map();
+
+const $ = id => document.getElementById(id);
+const status = msg => { $("status").textContent += ( $("status").textContent ? "\n" : "" ) + msg; };
+const resetStatus = msg => { $("status").textContent = msg || ""; };
+
+function norm(v){
+  return String(v ?? "")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+    .replace(/\s+/g," ").trim().toUpperCase();
+}
+function safeName(v){
+  return String(v ?? "").trim().replace(/[<>:"/\\|?*]+/g,"_").replace(/\s+/g,"_").replace(/^[._]+|[._]+$/g,"") || "sin_nombre";
+}
+function numeric(v, def=0){
+  if(v === null || v === undefined || v === "") return def;
+  if(typeof v === "number") return Number.isFinite(v) ? v : def;
+  const n = Number(String(v).replace(",","."));
+  return Number.isFinite(n) ? n : def;
+}
+function sheetAOA(name){
+  const ws = sourceWorkbook.Sheets[name];
+  if(!ws) throw new Error(`No existe la pestaña "${name}".`);
+  return XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:"",blankrows:true});
+}
+function headerMap(row){
+  const m = new Map();
+  row.forEach((v,i)=>{ const k=norm(v); if(k && !m.has(k)) m.set(k,i); });
+  return m;
+}
+function getCol(map,...names){
+  for(const n of names){ const k=norm(n); if(map.has(k)) return map.get(k); }
+  return null;
+}
+function excelDate(v){
+  if(v instanceof Date) return v;
+  if(typeof v !== "number" || v < 1 || v > 80000) return null;
+  const utc = new Date(Date.UTC(1899,11,30) + v*86400000);
+  return utc;
+}
+function isDateHeader(h){
+  const n=norm(h); return n.includes("DATE") || n.includes("FECHA");
+}
+function looksIntegerHeader(h){
+  const n=norm(h);
+  return n.includes("INST") || n.includes("INSTALL") || n.includes("CODE") || n.includes("MNT") ||
+    n.includes("NUMERO") || n.startsWith("NUM") || n.includes("MES") || n.includes("ANIO") ||
+    n.includes("AÑO") || n.includes("CONTADOR") || n.includes("CONADOR");
+}
+function cloneCfg(){ return JSON.parse(JSON.stringify(CFG)); }
+
+function detectPeriod(){
+  const a = sheetAOA(CFG.hojaResumen);
+  let days = numeric(a?.[1]?.[4],0);
+  let month = numeric(a?.[2]?.[4],0);
+  let year = numeric(a?.[3]?.[4],0);
+  if(!(month>=1 && month<=12)){
+    const u=sourceFileName.toUpperCase();
+    const toks={ENE:1,FEB:2,MAR:3,ABR:4,MAY:5,JUN:6,JUL:7,AGO:8,SEP:9,OCT:10,NOV:11,DIC:12};
+    for(const [t,n] of Object.entries(toks)){ if(u.includes(t)){month=n;break;} }
+  }
+  if(!(year>=2000 && year<=2100)){
+    const m=sourceFileName.match(/20\d{2}/); if(m) year=Number(m[0]);
+  }
+  return {daysMonth:Math.trunc(days),month:Math.trunc(month),year:Math.trunc(year)};
+}
+
+function loadJEs(){
+  jeNames = new Map();
+  if(sourceWorkbook.Sheets["JE"]){
+    const a=sheetAOA("JE");
+    let hr=-1, hm=null;
+    for(let r=0;r<Math.min(a.length,30);r++){
+      const m=headerMap(a[r]);
+      if(m.has("JE") && m.has("NOMBRE COMPLETO")){hr=r;hm=m;break;}
+    }
+    if(hr>=0){
+      const cje=hm.get("JE"), cn=hm.get("NOMBRE COMPLETO");
+      for(let r=hr+1;r<a.length;r++){
+        const id=String(a[r][cje]??"").trim(), name=String(a[r][cn]??"").trim();
+        if(id && name && !["#REF!","#N/A"].includes(norm(name))) jeNames.set(norm(id),name);
+      }
+    }
+  }
+  if(!jeNames.has("J10151")) jeNames.set("J10151","Jordi Lopez");
+  const dl=$("jeList"); dl.innerHTML="";
+  [...jeNames.entries()].sort((a,b)=>a[0].localeCompare(b[0])).forEach(([id,name])=>{
+    const o=document.createElement("option"); o.value=id; o.label=name; dl.appendChild(o);
+  });
+}
+function jefeName(id){ return jeNames.get(norm(id)) || String(id).trim(); }
+function jefeSignature(name,id){
+  if(!name || norm(name)===norm(id)) return String(id).trim();
+  return String(name).trim().split(/\s+/)[0];
+}
+
+function findTechnicians(je){
+  const a=sheetAOA(CFG.hojaResumen);
+  const hdr=a[6]||[];
+  const h=headerMap(hdr);
+  const cMat=getCol(h,"MATRICULA"), cName=getCol(h,"NOMBRE COMPLETO"), cJe=getCol(h,"JE"), cDays=getCol(h,"DIAS");
+  if([cMat,cName,cJe,cDays].some(v=>v===null)) throw new Error("No se localizan MATRÍCULA, NOMBRE COMPLETO, JE y DÍAS en INSTALADORES 2.");
+  const out=[];
+  for(let r=7;r<a.length;r++){
+    const row=a[r]||[];
+    if(norm(row[cJe])!==norm(je)) continue;
+    const days=numeric(row[cDays],0);
+    const mat=String(row[cMat]??"").trim(), name=String(row[cName]??"").trim();
+    if(days>0 && mat && name) out.push({matricula:mat,nombre:name,dias:days,row,header:hdr,hmap:h});
+  }
+  return out;
+}
+
+function summaryValues(t,daysMonth){
+  const row=t.row, hdr=t.header, h=t.hmap;
+  const val=(...names)=>{const c=getCol(h,...names); return c===null?"":row[c];};
+  function euroBetween(start,end=null,fallback=null){
+    const cs=getCol(h,start), ce=end?getCol(h,end):null;
+    if(cs===null) return 0;
+    const upper=ce===null?hdr.length:ce;
+    const euros=[];
+    for(let c=cs+1;c<upper;c++){ if(["€","EUR","EUROS"].includes(norm(hdr[c]))) euros.push(c); }
+    if(euros.length) return numeric(row[euros[euros.length-1]],0);
+    return fallback===null?0:numeric(row[fallback],0);
+  }
+  const r={
+    matricula:t.matricula,nombre:t.nombre,provincia:val("PROVINCIA"),dias:numeric(val("DIAS"),0),
+    productividad:numeric(val("Prod","Prod s/josmil"),0),
+    incidencias:numeric(val("INCIDENCIAS"),0),
+    inc_envio:numeric(val("INCIDENCIAS ENVIO >96h"),0),
+    incumpl:numeric(val("% INCUMP"),0),nps:numeric(val("NPS"),0),app:val("APP"),
+    calidad:numeric(val("CALIDAD INST"),0),averia:numeric(val("AVERÍA"),0),
+    pendientes:numeric(val("ELEM PTES"),0),material:numeric(val("MATERIAL"),0),
+    total_plus:numeric(val("TOTAL PR (+)"),0),total_minus:numeric(val("TOTAL PR (-)"),0),
+    porc_trabajado:numeric(val("% trabajado"),0),ajuste:numeric(val("AJUSTE A DIAS"),0),
+    atraso:numeric(val("ATRASO"),0),bono:numeric(val("BONO"),0),total:numeric(val("TOTAL A PAGAR"),0)
+  };
+  const cp=getCol(h,"Prod"), ci=getCol(h,"INCIDENCIAS"), cie=getCol(h,"INCIDENCIAS ENVIO >96h"), cn=getCol(h,"NPS"), ca=getCol(h,"APP"), cm=getCol(h,"MATERIAL");
+  r.prod_eur=euroBetween("Prod","INCIDENCIAS",cp===null?null:cp+1);
+  r.incidencias_eur=euroBetween("INCIDENCIAS","INCIDENCIAS ENVIO >96h",ci===null?null:ci+1);
+  r.inc_envio_eur=euroBetween("INCIDENCIAS ENVIO >96h","% INCUMP",cie===null?null:cie+1);
+  r.incumpl_eur=numeric(val("€ INCUMP"),0);
+  r.nps_eur=euroBetween("NPS","APP",cn===null?null:cn+1);
+  r.app_eur=euroBetween("APP","INST MES ANTE",ca===null?null:ca+1);
+  r.calidad_eur=euroBetween("CALIDAD INST","MATERIAL");
+  r.material_eur=euroBetween("MATERIAL","TOTAL PR (+)",cm===null?null:cm+1);
+  if(!r.porc_trabajado && daysMonth) r.porc_trabajado=r.dias/daysMonth;
+  return r;
+}
+
+function indexDetail(sourceSheet,mats){
+  const a=sheetAOA(sourceSheet);
+  const hdr=a[0]||[];
+  const used=[];
+  hdr.forEach((v,i)=>{if(String(v??"").trim()!=="") used.push(i);});
+  const headers=used.map(i=>String(hdr[i]??"").trim());
+  const hm=headerMap(hdr);
+  let installer=null;
+  for(const alias of ["INSTALLER","INSTALLER_TAG","INSTALLERTAG","INSTALADOR"]){ const c=getCol(hm,alias); if(c!==null){installer=c;break;} }
+  const wanted=new Map(mats.map(m=>[norm(m),m]));
+  const found=new Map(mats.map(m=>[m,[]]));
+  for(let r=1;r<a.length;r++){
+    const row=a[r]||[]; let target=null;
+    if(installer!==null){
+      target=wanted.get(norm(row[installer]))||null;
+    }else{
+      for(const v of row){ const k=norm(v); if(wanted.has(k)){target=wanted.get(k);break;} }
+    }
+    if(target) found.get(target).push(used.map(c=>row[c]??""));
+  }
+  return {headers,found};
+}
+
+function buildEmail(s,month,year,jeId,jeName){
+  const mes=MONTHS[month]||"mes", o=CFG.objetivos;
+  const lines=[
+    `Hola ${s.nombre.split(/\s+/)[0]},`,"",`Te paso tus datos de cierre de ${mes}:`,"",
+    `Días trabajados: ${Number.isInteger(s.dias)?s.dias:s.dias}`,
+    `Mes trabajado: ${(s.porc_trabajado*100).toFixed(0)}%`,
+    `Productividad: ${s.productividad.toFixed(2)}`,
+    `Incumplimientos: ${(s.incumpl*100).toFixed(2)}%`,
+    `NPS: ${(s.nps*100).toFixed(2)}%`,
+    `APP: ${(numeric(s.app,0)*100).toFixed(2)}%`,
+    `Calidad instalación: ${(s.calidad*100).toFixed(2)}%`,
+    `Total PR cierre: ${s.total.toFixed(2).replace(".",",")} €`,""
+  ];
+  if(s.dias<=2){
+    lines.push("Al haber pocos días trabajados este mes, los datos no son suficientes para valorar el rendimiento mensual de forma representativa.","",
+      "Nos quedamos con los indicadores disponibles y lo revisamos con más perspectiva en el próximo cierre.");
+  }else{
+    const pos=[], imp=[];
+    (s.incumpl<o.incumplimientosMax?pos:imp).push("incumplimientos");
+    (s.nps>=o.npsMin?pos:imp).push("NPS");
+    (numeric(s.app,0)>=o.appMin?pos:imp).push("APP");
+    (s.calidad<o.calidadMax?pos:imp).push("calidad");
+    if(pos.length) lines.push("Buen resultado en "+pos.slice(0,3).join(", ")+".");
+    if(imp.length) lines.push("Para el siguiente cierre, el foco principal estará en "+imp.slice(0,3).join(", ")+".");
+    lines.push(imp.length?"Vamos a trabajarlo durante el mes para corregir las desviaciones desde el principio.":"Cierre muy equilibrado. El objetivo ahora es mantener esta estabilidad durante el próximo mes.");
+  }
+  lines.push("","Un saludo,",jefeSignature(jeName,jeId));
+  return {subject:`Cierre de ${mes} – resultados individuales`,body:lines.join("\n")};
+}
+
+const border={top:{style:"thin",color:{rgb:"D9D9D9"}},bottom:{style:"thin",color:{rgb:"D9D9D9"}},left:{style:"thin",color:{rgb:"D9D9D9"}},right:{style:"thin",color:{rgb:"D9D9D9"}}};
+const fillGreen={patternType:"solid",fgColor:{rgb:"0B5D48"}};
+const fillLight={patternType:"solid",fgColor:{rgb:"DDEBE6"}};
+function styleCell(cell,style){ cell.s=Object.assign({},cell.s||{},style); }
+function setNumFmt(ws,addr,fmt){ if(ws[addr]) ws[addr].z=fmt; }
+
+function summarySheet(s,month,year){
+  const rows=[
+    [`Cierre PR - ${MONTHS[month].charAt(0).toUpperCase()+MONTHS[month].slice(1)} ${year}`,"","",""],
+    ["Nombre",s.nombre,"Matrícula",s.matricula],
+    ["Provincia",s.provincia,"Días trabajados",s.dias],
+    ["","","",""],
+    ["INDICADORES","RESULTADO","PR / IMPORTE","IMPORTE"],
+    ["Productividad",s.productividad,"Productividad",s.prod_eur],
+    ["Incidencias",s.incidencias,"Incidencias",s.incidencias_eur],
+    ["Incidencias envío >96h",s.inc_envio,"Envío >96h",s.inc_envio_eur],
+    ["% Incumplimientos",s.incumpl,"Incumplimientos",s.incumpl_eur],
+    ["NPS",s.nps,"NPS",s.nps_eur],
+    ["APP",numeric(s.app,0),"APP",s.app_eur],
+    ["Calidad instalación",s.calidad,"Calidad",s.calidad_eur],
+    ["Avería",s.averia,"Material",s.material_eur],
+    ["Elementos pendientes",s.pendientes,"Total PR (+)",s.total_plus],
+    ["Material",s.material,"Total PR (-)",s.total_minus],
+    ["","","% mes trabajado",s.porc_trabajado],
+    ["","","Ajuste PR por días trabajados",s.ajuste],
+    ["","","Atraso",s.atraso],
+    ["","","Bono",s.bono],
+    ["","","TOTAL A PAGAR",s.total]
+  ];
+  const ws=XLSX.utils.aoa_to_sheet(rows);
+  ws["!merges"]=[XLSX.utils.decode_range("A1:D1")];
+  ws["!cols"]=[{wch:25},{wch:20},{wch:27},{wch:18}];
+  for(let c=0;c<4;c++){
+    styleCell(ws[XLSX.utils.encode_cell({r:0,c})],{fill:fillGreen,font:{bold:true,color:{rgb:"FFFFFF"},sz:16},alignment:{horizontal:"center"},border});
+    styleCell(ws[XLSX.utils.encode_cell({r:4,c})],{fill:fillGreen,font:{bold:true,color:{rgb:"FFFFFF"}},alignment:{horizontal:"center"},border});
+  }
+  ["A2","C2","A3","C3"].forEach(a=>styleCell(ws[a],{fill:fillLight,font:{bold:true},border}));
+  for(let r=1;r<20;r++) for(let c=0;c<4;c++){ const a=XLSX.utils.encode_cell({r,c}); if(ws[a] && !ws[a].s) styleCell(ws[a],{border}); }
+  ["B9","B10","B11","B12","B13","B14","B15","D16"].forEach(a=>setNumFmt(ws,a,"0.00%"));
+  setNumFmt(ws,"D16","0%");
+  ["D6","D7","D8","D9","D10","D11","D12","D13","D14","D15","D17","D18","D19","D20"].forEach(a=>setNumFmt(ws,a,'#,##0.00 [$€-es-ES]'));
+  styleCell(ws["C20"],{fill:fillGreen,font:{bold:true,color:{rgb:"FFFFFF"}},border});
+  styleCell(ws["D20"],{fill:fillGreen,font:{bold:true,color:{rgb:"FFFFFF"}},border});
+  return ws;
+}
+
+function detailSheet(headers,rows){
+  if(!headers.length) return XLSX.utils.aoa_to_sheet([["Sin registros para este técnico"]]);
+  const out=[headers];
+  for(const row of rows){
+    out.push(row.map((v,i)=>{
+      if(v!=="" && isDateHeader(headers[i]) && typeof v==="number"){ const d=excelDate(v); if(d && d.getUTCFullYear()>=2010 && d.getUTCFullYear()<=2100) return d; }
+      return v;
+    }));
+  }
+  const ws=XLSX.utils.aoa_to_sheet(out,{cellDates:true});
+  ws["!autofilter"]={ref:XLSX.utils.encode_range({s:{r:0,c:0},e:{r:Math.max(0,rows.length),c:headers.length-1}})};
+  ws["!cols"]=headers.map((h,c)=>{
+    let m=String(h).length; for(let r=0;r<Math.min(rows.length,300);r++) m=Math.max(m,String(rows[r][c]??"").length);
+    return {wch:Math.min(Math.max(m+2,10),35)};
+  });
+  headers.forEach((h,c)=>{
+    const a=XLSX.utils.encode_cell({r:0,c}); styleCell(ws[a],{fill:fillGreen,font:{bold:true,color:{rgb:"FFFFFF"}},alignment:{horizontal:"center"},border});
+    for(let r=1;r<out.length;r++){
+      const addr=XLSX.utils.encode_cell({r,c}); if(!ws[addr]) continue;
+      styleCell(ws[addr],{border});
+      if(ws[addr].t==="d") ws[addr].z="dd/mm/yyyy";
+      else if(typeof ws[addr].v==="number") ws[addr].z=looksIntegerHeader(h)?"0":"0.00";
+    }
+  });
+  return ws;
+}
+
+async function generate(){
+  if(!(await validateRemoteAuthorization(false))) throw new Error("Aplicación desactivada o sin autorización online.");
+  if(!sourceWorkbook) throw new Error("Selecciona primero el Excel de cierre.");
+  const je=$("je").value.trim(); if(!je) throw new Error("Introduce la matrícula del JE.");
+  const {daysMonth,month,year}=detectPeriod(); if(!month||!year) throw new Error("No se ha podido detectar el mes/año del cierre.");
+  const techs=findTechnicians(je); if(!techs.length) throw new Error(`No se han encontrado técnicos con días trabajados para el JE ${je}.`);
+  const jname=jefeName(je);
+  resetStatus(`JE detectado: ${je} - ${jname}\nTécnicos: ${techs.length}`);
+  const mats=techs.map(t=>t.matricula);
+  const indexes={};
+  for(const spec of CFG.detalles){ status(`Leyendo ${spec.salida}...`); indexes[spec.salida]=indexDetail(spec.origen,mats); await new Promise(r=>setTimeout(r,0)); }
+
+  const zip=new JSZip();
+  const base=`Cierre_${safeName(je)}_${MONTHS[month].charAt(0).toUpperCase()+MONTHS[month].slice(1)}_${year}`;
+  for(let i=0;i<techs.length;i++){
+    const s=summaryValues(techs[i],daysMonth);
+    const folder=zip.folder(`${safeName(s.matricula)}_${safeName(s.nombre)}`);
+    const wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb,summarySheet(s,month,year),"Resumen Cobro");
+    for(const spec of CFG.detalles){
+      const idx=indexes[spec.salida];
+      XLSX.utils.book_append_sheet(wb,detailSheet(idx.headers,idx.found.get(s.matricula)||[]),spec.salida.slice(0,31));
+    }
+    const bytes=XLSX.write(wb,{bookType:"xlsx",type:"array",cellStyles:true,compression:true});
+    folder.file(`Cierre_${safeName(s.matricula)}_${safeName(s.nombre)}.xlsx`,bytes);
+    const mail=buildEmail(s,month,year,je,jname);
+    folder.file(`Correo_${safeName(s.matricula)}_${safeName(s.nombre)}.txt`,"\ufeffASUNTO: "+mail.subject+"\n\n"+mail.body);
+    status(`[${i+1}/${techs.length}] ${s.matricula} - ${s.nombre}`);
+    await new Promise(r=>setTimeout(r,0));
+  }
+  status("Comprimiendo...");
+  const blob=await zip.generateAsync({type:"blob",compression:"DEFLATE",compressionOptions:{level:6}});
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=base+".zip"; document.body.appendChild(a); a.click();
+  setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},1500);
+  status(`Terminado: ${base}.zip`);
+}
+
+$("file").addEventListener("change", async e=>{
+  if(!(await validateRemoteAuthorization(false))){ resetStatus("APLICACIÓN BLOQUEADA\n" + remoteAuthorization.message); return; }
+  const f=e.target.files?.[0]; if(!f) return;
+  try{
+    resetStatus("Leyendo Excel...");
+    sourceFileName=f.name;
+    const buf=await f.arrayBuffer();
+    sourceWorkbook=XLSX.read(buf,{type:"array",raw:true,cellDates:false,cellFormula:false});
+    window.sourceWorkbook = sourceWorkbook;
+    loadJEs();
+    const period=detectPeriod();
+    resetStatus(`Archivo cargado: ${f.name}\nPeriodo detectado: ${MONTHS[period.month]||"?"} ${period.year||"?"}\nJE detectados en la pestaña JE: ${jeNames.size}`);
+    $("generate").disabled=!remoteAuthorization.ok;
+  }catch(err){
+    sourceWorkbook=null; $("generate").disabled=true;
+    resetStatus("ERROR: "+(err?.message||err));
+  }
+});
+$("generate").addEventListener("click",async()=>{
+  $("generate").disabled=true;
+  try{ await generate(); }catch(err){ status("ERROR: "+(err?.message||err)); }
+  finally{$("generate").disabled=!remoteAuthorization.ok;}
+});
+
+window.addEventListener("DOMContentLoaded", async ()=>{
+  const banner = document.getElementById("authBanner");
+  const ok = await validateRemoteAuthorization(false);
+  if(ok){
+    banner.textContent = "Autorización online activa.";
+    banner.style.background = "#d1e7dd";
+    banner.style.borderColor = "#badbcc";
+    banner.style.color = "#0f5132";
+    resetStatus("Autorización online: ACTIVA\\nSelecciona el Excel de cierre.");
+  }else{
+    banner.textContent = "Aplicación bloqueada: " + remoteAuthorization.message;
+    banner.style.background = "#f8d7da";
+    banner.style.borderColor = "#f5c2c7";
+    banner.style.color = "#842029";
+    resetStatus("APLICACIÓN BLOQUEADA\\n" + remoteAuthorization.message);
+  }
+});
+
+</script>
+</body>
+</html>
