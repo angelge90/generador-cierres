@@ -34,6 +34,8 @@
   </div>
 
 
+  <label for="mode">Modo</label><select id="mode"><option value="individual">Cierres individuales por JE</option><option value="normalized">EXPORTAR PARA ÁREA TÉCNICA V2</option></select>
+  <label for="normalizedPeriod">Periodo comercial</label><input id="normalizedPeriod" type="month" min="2026-01"><label><input id="confirmPeriod" type="checkbox"> Confirmo el periodo si el libro no aporta MES/AÑO fiables</label>
   <label for="file">Excel de cierre (.xlsm / .xlsx)</label>
   <input id="file" type="file" accept=".xlsm,.xlsx">
 
@@ -47,6 +49,7 @@
 </div>
 
 
+<script src="normalizados.js"></script>
 <script>
 const REMOTE_CONTROL = {
   url: "./control.js",
@@ -461,7 +464,7 @@ $("file").addEventListener("change", async e=>{
     resetStatus("Leyendo Excel...");
     sourceFileName=f.name;
     const buf=await f.arrayBuffer();
-    sourceWorkbook=XLSX.read(buf,{type:"array",raw:true,cellDates:false,cellFormula:false});
+    sourceWorkbook=XLSX.read(buf,{type:"array",raw:true,cellDates:false,cellFormula:true,cellNF:true});
     window.sourceWorkbook = sourceWorkbook;
     loadJEs();
     const period=detectPeriod();
@@ -474,10 +477,29 @@ $("file").addEventListener("change", async e=>{
 });
 $("generate").addEventListener("click",async()=>{
   $("generate").disabled=true;
-  try{ await generate(); }catch(err){ status("ERROR: "+(err?.message||err)); }
+  try{ if($("mode").value==="normalized") await generateNormalized(); else await generate(); }catch(err){ status("ERROR: "+(err?.message||err)); }
   finally{$("generate").disabled=!remoteAuthorization.ok;}
 });
 
+function normalizedSheets(){
+ const result={};
+ for(const name of sourceWorkbook.SheetNames){const ws=sourceWorkbook.Sheets[name],rows=[];
+  for(const addr of Object.keys(ws)){if(addr.startsWith('!'))continue;const pos=XLSX.utils.decode_cell(addr);if(pos.r>1048575||pos.c>255)throw Error('Libro fuera del límite de columnas admitido.');if(!rows[pos.r])rows[pos.r]=[];rows[pos.r][pos.c]=ws[addr];}result[name]=rows;
+ }return result;
+}
+async function generateNormalized(){
+ if(!(await validateRemoteAuthorization(false)))throw Error('Autorización no disponible.');
+ if(!sourceWorkbook)throw Error('Selecciona un cierre.');
+ const result=ATNormalized.exportClosure({sheets:normalizedSheets(),period:$("normalizedPeriod").value,confirmed:$("confirmPeriod").checked});
+ const summary=XLSX.utils.book_new(),details=XLSX.utils.book_new();
+ summary.Props={Subject:'AT:NORMALIZED:1'};details.Props={Subject:result.report.detailsComplete?'AT:NORMALIZED:1:DETAIL:COMPLETE':'AT:NORMALIZED:1:DETAIL:PENDING'};
+ function append(wb,rows,name){const ws=detailSheet(rows[0],rows.slice(1));XLSX.utils.book_append_sheet(wb,ws,name);}
+ append(summary,result.summary,'RESUMEN');append(summary,result.reportRows,'INFORME');
+ for(const [name,rows] of Object.entries(result.details))append(details,rows,name);
+ for(const [wb,name] of [[summary,'DATOS_Y_ECONOMICOS.xlsx'],[details,'DETALLES.xlsx']]){XLSX.writeFile(wb,name,{bookType:'xlsx',compression:true,cellStyles:true});}
+ resetStatus(JSON.stringify(result.report,null,2)+'\nResumen exportado. Revisa los campos pendientes y los detalles incompletos antes de importar.');
+}
+$("mode").addEventListener('change',()=>{$("je").disabled=$("mode").value==='normalized';});
 window.addEventListener("DOMContentLoaded", async ()=>{
   const banner = document.getElementById("authBanner");
   const ok = await validateRemoteAuthorization(false);
@@ -499,3 +521,4 @@ window.addEventListener("DOMContentLoaded", async ()=>{
 </script>
 </body>
 </html>
+
