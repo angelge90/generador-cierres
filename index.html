@@ -35,13 +35,17 @@
 
 
   <label for="mode">Modo</label><select id="mode"><option value="individual">Cierres individuales por JE</option><option value="normalized">EXPORTAR PARA ÁREA TÉCNICA V2</option></select>
+  <div id="normalizedOptions" hidden>
   <label for="normalizedPeriod">Periodo comercial</label><input id="normalizedPeriod" type="month" min="2026-01"><label><input id="confirmPeriod" type="checkbox"> Confirmo el periodo si el libro no aporta MES/AÑO fiables</label>
+  </div>
   <label for="file">Excel de cierre (.xlsm / .xlsx)</label>
   <input id="file" type="file" accept=".xlsm,.xlsx">
 
+  <div id="individualJe">
   <label for="je">Matrícula JE</label>
   <input id="je" type="text" list="jeList" placeholder="Ej. 254261">
   <datalist id="jeList"></datalist>
+  </div>
 
   <button id="generate" disabled>GENERAR CIERRES</button>
   <div id="status" class="status">Selecciona el Excel de cierre.</div>
@@ -105,7 +109,7 @@ async function validateRemoteAuthorization(showMessage=true){
     }
     remoteAuthorization = {ok:true, checkedAt:Date.now(), message:data.message || "Autorizado"};
     if(fileInput) fileInput.disabled = false;
-    if(jeInput) jeInput.disabled = false;
+    if(jeInput) jeInput.disabled = document.getElementById('mode')?.value==='normalized';
     if(btn) btn.disabled = !window.sourceWorkbook;
     if(showMessage && typeof resetStatus === "function"){
       resetStatus("Autorización online: ACTIVA\\nSelecciona el Excel de cierre.");
@@ -459,7 +463,9 @@ async function generate(){
 
 $("file").addEventListener("change", async e=>{
   if(!(await validateRemoteAuthorization(false))){ resetStatus("APLICACIÓN BLOQUEADA\n" + remoteAuthorization.message); return; }
-  const f=e.target.files?.[0]; if(!f) return;
+  const f=e.target.files?.[0];
+  $("normalizedPeriod").value='';$("confirmPeriod").checked=false;
+  if(!f){sourceWorkbook=null;window.sourceWorkbook=null;$("generate").disabled=true;resetStatus('Selecciona el Excel de cierre.');return;}
   try{
     resetStatus("Leyendo Excel...");
     sourceFileName=f.name;
@@ -467,18 +473,23 @@ $("file").addEventListener("change", async e=>{
     sourceWorkbook=XLSX.read(buf,{type:"array",raw:true,cellDates:false,cellFormula:true,cellNF:true});
     window.sourceWorkbook = sourceWorkbook;
     loadJEs();
+    const verifiedPeriod=ATNormalized.periodMetadata({'INSTALADORES 2':[null,null,[null,null,sourceWorkbook.Sheets['INSTALADORES 2']?.C3,sourceWorkbook.Sheets['INSTALADORES 2']?.D3],[null,null,sourceWorkbook.Sheets['INSTALADORES 2']?.C4,sourceWorkbook.Sheets['INSTALADORES 2']?.D4]]});
+    $("normalizedPeriod").value=verifiedPeriod??'';
     const period=detectPeriod();
-    resetStatus(`Archivo cargado: ${f.name}\nPeriodo detectado: ${MONTHS[period.month]||"?"} ${period.year||"?"}\nJE detectados en la pestaña JE: ${jeNames.size}`);
+    if($("mode").value==='normalized')resetStatus(verifiedPeriod?'Periodo contrastado: '+verifiedPeriod:'Selecciona y confirma el periodo comercial; el libro no aporta MES/AÑO fiables.');
+    else resetStatus(`Archivo cargado: ${f.name}\nPeriodo detectado: ${MONTHS[period.month]||"?"} ${period.year||"?"}\nJE detectados en la pestaña JE: ${jeNames.size}`);
     $("generate").disabled=!remoteAuthorization.ok;
   }catch(err){
-    sourceWorkbook=null; $("generate").disabled=true;
+    sourceWorkbook=null;window.sourceWorkbook=null; $("generate").disabled=true;
     resetStatus("ERROR: "+(err?.message||err));
   }
 });
 $("generate").addEventListener("click",async()=>{
   $("generate").disabled=true;
-  try{ if($("mode").value==="normalized") await generateNormalized(); else await generate(); }catch(err){ status("ERROR: "+(err?.message||err)); }
-  finally{$("generate").disabled=!remoteAuthorization.ok;}
+  const normalized=$("mode").value==='normalized';
+  if(normalized)resetStatus('Validando cierre territorial…');
+  try{ if(normalized) await generateNormalized(); else await generate(); }catch(err){ if(normalized)resetStatus('ERROR: '+(err?.message||err));else status("ERROR: "+(err?.message||err)); }
+  finally{$("generate").disabled=!remoteAuthorization.ok||!sourceWorkbook;}
 });
 
 function normalizedSheets(){
@@ -499,7 +510,14 @@ async function generateNormalized(){
  for(const [wb,name] of [[summary,'DATOS_Y_ECONOMICOS.xlsx'],[details,'DETALLES.xlsx']]){XLSX.writeFile(wb,name,{bookType:'xlsx',compression:true,cellStyles:true});}
  resetStatus(JSON.stringify(result.report,null,2)+'\nResumen exportado. Revisa los campos pendientes y los detalles incompletos antes de importar.');
 }
-$("mode").addEventListener('change',()=>{$("je").disabled=$("mode").value==='normalized';});
+function syncExportMode(){
+ const normalized=$("mode").value==='normalized';
+ $("individualJe").hidden=normalized;$("normalizedOptions").hidden=!normalized;
+ $("je").disabled=normalized||!remoteAuthorization.ok;
+ if(normalized){$("confirmPeriod").checked=false;resetStatus('Exportación territorial: no se selecciona JE. Revisa el periodo comercial.');}
+ else resetStatus(sourceWorkbook?'Cierre cargado. Selecciona la matrícula JE para el modo individual.':'Selecciona el Excel de cierre.');
+}
+$("mode").addEventListener('change',syncExportMode);
 window.addEventListener("DOMContentLoaded", async ()=>{
   const banner = document.getElementById("authBanner");
   const ok = await validateRemoteAuthorization(false);
