@@ -14,7 +14,7 @@ function periodMetadata(sheets){
 function exportClosure({sheets,period,confirmed=false,bundleId=crypto.randomUUID()}){
  if(!/^20\d{2}-(0[1-9]|1[0-2])$/.test(period)||Number(period.slice(0,4))<2026)fail('Periodo comercial no válido.');
  const summary=sheets['INSTALADORES 2'];if(!summary)fail('Falta INSTALADORES 2.');
- const report={contract:VERSION,period,bundleId,technicians:0,summaryErrors:0,pendingFields:0,details:[]};
+ const report={contract:VERSION,period,bundleId,technicians:0,summaryErrors:0,pendingFields:0,missingNps:0,masterIdentities:0,details:[]};
  const value=c=>c?.v??null;
  const raw=(c)=>c?.t==='e'?'AT_ERROR_EXCEL':c?.f&&(c.v===undefined||c.v===null)?'AT_FORMULA_SIN_RESULTADO':value(c);
  const headers=summary[6]??[];
@@ -24,7 +24,7 @@ function exportClosure({sheets,period,confirmed=false,bundleId=crypto.randomUUID
  const fields=['% INCUMP','NPS','APP','CALIDAD INST','dias partida','dias trabajados','% trabajado','ATRASO','BONO','TOTAL A PAGAR'];
  const cols=fields.map(f=>column(headers,[f]));
  const id=c=>{if(c?.t==='e'||(c?.f&&value(c)===null))fail('Identificador sin resultado válido.');const v=value(c);if(typeof v==='string'&&v&&v===v.trim())return v;if(typeof v==='number'&&Number.isInteger(v)&&/^0+$/.test(c.z??''))return String(v).padStart(c.z.length,'0');fail('Identificador ausente o ambiguo: revisar resumen.');};
- function number(c,field,ratio=false,negative=false){if(c?.t==='e'||(c?.f&&(c.v===null||c.v===undefined)))fail('Campo esencial sin resultado válido: '+field);let v=value(c);if(v===null||v==='')return null;if(!['ATRASO','BONO','TOTAL A PAGAR'].includes(field)&&/[€$£]/.test(c?.z??''))fail('Formato monetario incompatible: '+field);if(ratio&&typeof v==='string'&&/^-?\d+(?:[.,]\d+)?%$/.test(v))v=Number(v.slice(0,-1).replace(',','.'))/100;if(typeof v!=='number'||!Number.isFinite(v)||(!ratio&&(c?.z??'').includes('%'))||(ratio&&(/[€$£]/.test(c?.z??'')||v<(negative?-1:0)||v>1)))fail('Escala no válida: '+field);if(field==='Prod'&&v<0)fail('Productividad negativa no válida.');return v;}
+ function number(c,field,ratio=false,negative=false){if(c?.t==='e'||(c?.f&&(c.v===null||c.v===undefined)))fail('Campo esencial sin resultado válido: '+field);let v=value(c);if(field==='NPS'&&v==='-'){report.missingNps++;return null;}if(v===null||v==='')return null;if(!['ATRASO','BONO','TOTAL A PAGAR'].includes(field)&&/[€$£]/.test(c?.z??''))fail('Formato monetario incompatible: '+field);if(ratio&&typeof v==='string'&&/^-?\d+(?:[.,]\d+)?%$/.test(v))v=Number(v.slice(0,-1).replace(',','.'))/100;if(typeof v!=='number'||!Number.isFinite(v)||(!ratio&&(c?.z??'').includes('%'))||(ratio&&(/[€$£]/.test(c?.z??'')||v<(negative?-1:0)||v>1)))fail('Escala no válida: '+field);if(field==='Prod'&&v<0)fail('Productividad negativa no válida.');return v;}
  const detected=periodMetadata(sheets);
  if(detected&&detected!==period)fail('El periodo contradice MES/AÑO.');if(!detected&&!confirmed)fail('Confirma expresamente el periodo comercial.');
  report.periodConfirmed=!detected;const people=new Map(),out=[HEADERS.concat(headers.map((c,i)=>`ORIGINAL_${i+1}:${String(value(c)??'')}`))];
@@ -50,16 +50,30 @@ function exportClosure({sheets,period,confirmed=false,bundleId=crypto.randomUUID
  const records=summary.slice(7).filter(row=>row&&row.some(c=>value(c)!==null||c?.f));
  const candidates=exact(headers,'JE');
  if(!candidates.length)fail('JE_CABECERA_AUSENTE: falta la columna JE; JE? es auxiliar y no identifica responsables.');
- const mappings=candidates.map(col=>({col,values:records.map(row=>{try{const je=jeId(row[col]);return jeNames.has(je)?je:null;}catch{return null;}})}));
+ const mappings=candidates.map(col=>{
+  const directoryForColumn=new Map(jeNames),masters=new Set();
+  for(const row of records){
+   let mat,je;try{mat=id(row[idx.mat]);je=jeId(row[col]);}catch{continue;}
+   if(mat!==je)continue;
+   const name=value(row[idx.name]);
+   if(row[idx.name]?.t==='e'||typeof name!=='string'||!name.trim())fail('MASTER_IDENTIDAD_INVALIDA: autoidentificación sin nombre válido.');
+   const same=records.filter(r=>{try{return id(r[idx.mat])===mat;}catch{return false;}});
+   if(same.length!==1)fail('MASTER_IDENTIDAD_AMBIGUA: matrícula del resumen repetida.');
+   if(directoryForColumn.has(je)&&directoryForColumn.get(je)!==name)fail('MASTER_NOMBRE_CONFLICTIVO: el resumen y el directorio discrepan.');
+   if(!directoryForColumn.has(je)){directoryForColumn.set(je,name);masters.add(je);}
+  }
+  return {col,names:directoryForColumn,masters,values:records.map(row=>{try{const je=jeId(row[col]);return directoryForColumn.has(je)?je:null;}catch{return null;}})};
+ });
  const valid=mappings.filter(m=>m.values.every(v=>v!==null));
  if(!valid.length){const invalid=Math.min(...mappings.map(m=>m.values.filter(v=>v===null).length));fail(`JE_NO_ASOCIABLE: ${invalid} filas del resumen sin responsable exacto en la pestaña JE. No se exporta el cierre.`);}
  if(valid.some(m=>m.values.some((v,i)=>v!==valid[0].values[i])))fail('JE_COLUMNAS_CONFLICTIVAS: varias columnas JE válidas asignan responsables distintos. No se elige la primera.');
  idx.je=valid[0].col;
+ const verifiedNames=valid[0].names;report.masterIdentities=valid[0].masters.size;report.masterIdentitySource='Matrícula y JE iguales en fila única de INSTALADORES 2 con nombre contrastado';
  report.jeMapping={sourceColumn:idx.je+1,candidates:candidates.length,rule:valid.length>1?'DUPLICADOS_EQUIVALENTES_EN_TODAS_LAS_FILAS':'COLUMNA_UNICA_CON_DIRECTORIO_VALIDO'};
  for(const row of summary.slice(7)){if(!row||!row.some(c=>value(c)!==null||c?.f))continue;
   const mat=id(row[idx.mat]),je=jeId(row[idx.je]);if(people.has(mat))fail('Matrícula duplicada en resumen.');const name=value(row[idx.name]);if(row[idx.name]?.t==='e'||typeof name!=='string'||!name)fail('Falta nombre en resumen.');
   const values=cols.map((c,i)=>number(row[c],fields[i],[0,1,2,3,6].includes(i),i===1));const productivity=idx.prod===null?null:number(row[idx.prod],'Prod');if(idx.prod===null)report.pendingFields++;
-  const person={mat,je,name};people.set(mat,person);out.push([VERSION,period,mat,name,je,jeNames.get(je)??null,value(row[idx.province]),productivity,...values.slice(0,4),...values.slice(4),idx.prod===null?'PENDIENTE_PROD_S_JOSMIL':'VALIDADO',bundleId,...headers.map((_,i)=>raw(row[i]))]);
+  const person={mat,je,name};people.set(mat,person);out.push([VERSION,period,mat,name,je,verifiedNames.get(je)??null,value(row[idx.province]),productivity,...values.slice(0,4),...values.slice(4),idx.prod===null?'PENDIENTE_PROD_S_JOSMIL':'VALIDADO',bundleId,...headers.map((_,i)=>raw(row[i]))]);
  }
  if(!people.size)fail('Sin técnicos en resumen.');report.technicians=people.size;
  const detailSheets={};
