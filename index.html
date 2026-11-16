@@ -53,7 +53,7 @@
 </div>
 
 
-<script src="normalizados.js"></script>
+<script src="normalizados.js?v=AT_NORMALIZED_1_20261117"></script>
 <script>
 const REMOTE_CONTROL = {
   url: "./control.js",
@@ -473,6 +473,9 @@ $("file").addEventListener("change", async e=>{
     sourceWorkbook=XLSX.read(buf,{type:"array",raw:true,cellDates:false,cellFormula:true,cellNF:true});
     window.sourceWorkbook = sourceWorkbook;
     loadJEs();
+    if(!window.ATNormalized || typeof window.ATNormalized.periodMetadata !== 'function' || typeof window.ATNormalized.exportClosure !== 'function'){
+      throw new Error('El módulo de exportación de Área Técnica V2 no se ha cargado correctamente. Actualiza la página con Ctrl+F5 y vuelve a seleccionar el Excel.');
+    }
     const verifiedPeriod=ATNormalized.periodMetadata({'INSTALADORES 2':[null,null,[null,null,sourceWorkbook.Sheets['INSTALADORES 2']?.C3,sourceWorkbook.Sheets['INSTALADORES 2']?.D3],[null,null,sourceWorkbook.Sheets['INSTALADORES 2']?.C4,sourceWorkbook.Sheets['INSTALADORES 2']?.D4]]});
     $("normalizedPeriod").value=verifiedPeriod??'';
     const period=detectPeriod();
