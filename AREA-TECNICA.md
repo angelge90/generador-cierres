@@ -16,3 +16,5 @@ La primera versión procesa un cierre mensual por ejecución. Para diez meses re
 Las pruebas utilizan datos ficticios. Pendiente contrastar ambos Excel contra un original autorizado: no se declara homologación real. El modo individual conserva sus reglas previas; las validaciones estrictas descritas aquí pertenecen al modo normalizado. Se utilizan las bibliotecas ya existentes del Generador y sus recursos de carga; el fichero de cierre se procesa en el navegador.
 
 Pruebas unitarias del exportador: `node --test tests/normalizados.test.cjs`. El recorrido navegador y la integración con PostgreSQL están documentados en la PR de Área Técnica V2, utilizando la misma versión de normalizados.js.
+
+Resultados finales: 4 pruebas unitarias superadas, 0 fallidas; recorrido integrado de navegador con V2 y PostgreSQL local, 9 comprobaciones superadas, incluyendo el modo individual previo. La integración, los límites y la configuración corporativa están en `docs/CIERRES-NORMALIZADOS.md` de dashboard-tecnicos-v2. No se han publicado originales ni se ha conectado una base real.
