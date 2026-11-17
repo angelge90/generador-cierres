@@ -33,13 +33,16 @@ function exportClosure({sheets,period,confirmed=false,bundleId=crypto.randomUUID
  const jeId=c=>{if(c?.t!=='e'&&typeof value(c)==='number'&&Number.isSafeInteger(value(c))&&value(c)>=0&&(!c.z||c.z==='General'))return String(value(c));return id(c);};
  const jeNames=new Map(),directory=sheets.JE;
  if(!directory)fail('JE_DIRECTORIO_AUSENTE: falta la pestaña JE.');
+ // La pestaña JE de cierres reales contiene bloques de cálculo con cabeceras repetidas.
+ // Solo el primer bloque es el directorio; nunca interpretar los bloques posteriores
+ // como nuevos responsables o como un conflicto del directorio.
  const headerRows=directory.map((r,i)=>r&&r.some(c=>jeHeader(value(c))==='JE')&&r.some(c=>jeHeader(value(c))==='NOMBRE COMPLETO')?i:-1).filter(i=>i>=0);
- if(headerRows.length!==1)fail('JE_DIRECTORIO_AMBIGUO: se requiere una cabecera única JE / NOMBRE COMPLETO.');
- const hr=headerRows[0],dh=directory[hr];
+ if(!headerRows.length)fail('JE_DIRECTORIO_AMBIGUO: falta la cabecera JE / NOMBRE COMPLETO.');
+ const hr=headerRows[0],end=headerRows[1]??directory.length,dh=directory[hr];
  const exact=(h,label)=>h.map((c,i)=>jeHeader(value(c))===label?i:-1).filter(i=>i>=0);
  const dc=exact(dh,'JE'),dn=exact(dh,'NOMBRE COMPLETO');
  if(dc.length!==1||dn.length!==1)fail('JE_DIRECTORIO_AMBIGUO: columnas repetidas en la pestaña JE.');
- for(const r of directory.slice(hr+1)){
+ for(const r of directory.slice(hr+1,end)){
   if(!r||(!value(r[dc[0]])&&!value(r[dn[0]])))continue;
   let je;try{je=jeId(r[dc[0]]);}catch{fail('JE_DIRECTORIO_INVALIDO: identificador de responsable no válido.');}
   const name=value(r[dn[0]]);

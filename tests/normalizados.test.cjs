@@ -18,3 +18,17 @@ test('Territorial sintética de 43 técnicos y nueve JE: ninguna fila se filtra 
 test('JE? antes de JE no desplaza la asignación de responsables',()=>{const f=fixture(),s=f['INSTALADORES 2'];s[6][2]={v:'JE?'};s[6].push({v:'JE'});s[7][2]={t:'e',v:42};s[8][2]={v:'Auxiliar'};s[7].push({v:'SYN-JE-001'});s[8].push({v:'SYN-JE-002'});const r=run(f);assert.equal(r.report.jeMapping.sourceColumn,16);assert.equal(r.summary[1][4],'SYN-JE-001');assert.equal(r.summary[2][4],'SYN-JE-002');});
 test('Issue30: seis NPS guion permanecen null y máster autoidentificados conservan equipo',()=>{const f=fixture(),s=f['INSTALADORES 2'];delete f.JE;f.JE=[[{v:'JE'},{v:'NOMBRE COMPLETO'}]];s[7][0]={v:'SYN-MASTER-1'};s[7][2]={v:'SYN-MASTER-1'};s[8][0]={v:'SYN-MASTER-2'};s[8][2]={v:'SYN-MASTER-2'};for(let n=3;n<=43;n++){const r=s[7].map(c=>({...c}));r[0]={v:'SYN-TEC-'+n};r[1]={v:'Persona ficticia '+n};r[2]={v:n<=9?'SYN-MASTER-1':'SYN-MASTER-2'};s.push(r);}for(let n=7;n<13;n++)s[n][6]={v:'-'};const r=run(f);assert.equal(r.summary.length,44);assert.equal(r.report.missingNps,6);assert.equal(r.report.masterIdentities,2);assert.equal(r.summary.slice(1).filter(row=>row[9]===null).length,6);assert.equal(r.summary[1][4],'SYN-MASTER-1');assert.equal(r.summary[1][5],'Persona ficticia');assert.equal(r.summary[1][17],235.5);assert.equal(r.summary[2][17],0);});
 test('Issue30: referencia desconocida sin autorreferencia y nombre contradictorio bloquean',()=>{let f=fixture();f['INSTALADORES 2'][7][2]={v:'SYN-MASTER-AUSENTE'};assert.throws(()=>run(f),/JE_NO_ASOCIABLE/);f=fixture();f['INSTALADORES 2'][7][0]={v:'SYN-JE-001'};assert.throws(()=>run(f),/MASTER_NOMBRE_CONFLICTIVO/);});
+
+test('Directorio real con cabeceras repetidas: utiliza solo el primer bloque de JE',()=>{
+ const f=fixture(),cells=r=>r.map(v=>({v}));
+ f.JE=[[],[],cells(['EMPRESA','JE','TERRI','NOMBRE COMPLETO']),cells(['Empresa','SYN-JE-001','Zona','Responsable ficticio 1']),cells(['Empresa','SYN-JE-002','Zona','Responsable ficticio 2']),[],[],[],[],cells(['EMPRESA','JE','TERRI','NOMBRE COMPLETO']),[],cells(['EMPRESA','JE','TERRI','NOMBRE COMPLETO'])];
+ const r=run(f);
+ assert.equal(r.report.technicians,2);
+ assert.equal(r.summary[1][5],'Responsable ficticio 1');
+ assert.equal(r.summary[2][5],'Responsable ficticio 2');
+});
+test('Directorio real: JE no identificado en primer bloque sigue bloqueado',()=>{
+ const f=fixture(),cells=r=>r.map(v=>({v}));
+ f.JE=[cells(['JE','NOMBRE COMPLETO']),cells(['SYN-JE-001','Responsable ficticio 1']),[],cells(['JE','NOMBRE COMPLETO']),cells(['SYN-JE-002','Responsable ficticio 2'])];
+ assert.throws(()=>run(f),/JE_NO_ASOCIABLE/);
+});
