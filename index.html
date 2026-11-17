@@ -54,7 +54,7 @@
 </div>
 
 
-<script src="normalizados.js?v=AT_NORMALIZED_1_20261117_PROD"></script>
+<script src="normalizados.js?v=AT_NORMALIZED_1_20261117_DATES"></script>
 <script>
 const REMOTE_CONTROL = {
   url: "./control.js",
@@ -398,12 +398,12 @@ function summarySheet(s,month,year){
   return ws;
 }
 
-function detailSheet(headers,rows){
+function detailSheet(headers,rows,preserveRawDates=false){
   if(!headers.length) return XLSX.utils.aoa_to_sheet([["Sin registros para este técnico"]]);
   const out=[headers];
   for(const row of rows){
     out.push(row.map((v,i)=>{
-      if(v!=="" && isDateHeader(headers[i]) && typeof v==="number"){ const d=excelDate(v); if(d && d.getUTCFullYear()>=2010 && d.getUTCFullYear()<=2100) return d; }
+      if(!preserveRawDates && v!=="" && isDateHeader(headers[i]) && typeof v==="number"){ const d=excelDate(v); if(d && d.getUTCFullYear()>=2010 && d.getUTCFullYear()<=2100) return d; }
       return v;
     }));
   }
@@ -419,6 +419,7 @@ function detailSheet(headers,rows){
       const addr=XLSX.utils.encode_cell({r,c}); if(!ws[addr]) continue;
       styleCell(ws[addr],{border});
       if(ws[addr].t==="d") ws[addr].z="dd/mm/yyyy";
+      else if(preserveRawDates && isDateHeader(h) && typeof ws[addr].v==="number") ws[addr].z="dd/mm/yyyy hh:mm";
       else if(typeof ws[addr].v==="number") ws[addr].z=looksIntegerHeader(h)?"0":"0.00";
     }
   });
@@ -508,7 +509,7 @@ async function generateNormalized(){
  const result=ATNormalized.exportClosure({sheets:normalizedSheets(),period:$("normalizedPeriod").value,confirmed:$("confirmPeriod").checked});
  const summary=XLSX.utils.book_new(),details=XLSX.utils.book_new();
  summary.Props={Subject:'AT:NORMALIZED:1'};details.Props={Subject:result.report.detailsComplete?'AT:NORMALIZED:1:DETAIL:COMPLETE':'AT:NORMALIZED:1:DETAIL:PENDING'};
- function append(wb,rows,name){const ws=detailSheet(rows[0],rows.slice(1));XLSX.utils.book_append_sheet(wb,ws,name);}
+ function append(wb,rows,name){const ws=detailSheet(rows[0],rows.slice(1),true);XLSX.utils.book_append_sheet(wb,ws,name);}
  append(summary,result.summary,'RESUMEN');append(summary,result.reportRows,'INFORME');
  for(const [name,rows] of Object.entries(result.details))append(details,rows,name);
  for(const [wb,name] of [[summary,'DATOS_Y_ECONOMICOS.xlsx'],[details,'DETALLES.xlsx']]){XLSX.writeFile(wb,name,{bookType:'xlsx',compression:true,cellStyles:true});}
